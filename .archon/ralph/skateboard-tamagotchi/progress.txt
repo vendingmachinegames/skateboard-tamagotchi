@@ -1,0 +1,37 @@
+# Skateboard Tamagotchi — Implementation Progress
+
+## Codebase Patterns
+
+- **Runtime**: Bun with TypeScript (ES2022, strict mode)
+- **Testing**: Bun built-in test runner (`bun test`)
+- **Type checking**: `bun run type-check` → `tsc --noEmit`
+- **Game loop**: requestAnimationFrame-based with delta time clamping (max 100ms)
+- **Canvas**: Optional HTMLCanvasElement passed to Game constructor; graceful degradation when unavailable (tests, server)
+- **File structure**: Colocated tests (`X.test.ts` next to `X.ts`)
+- **RAF mocking in tests**: Mock `globalThis.requestAnimationFrame` to capture callback, manually invoke with timestamps for deterministic testing
+
+## Iteration Log
+
+### US-001: Project scaffolding and game loop — COMPLETED (2026-04-26)
+
+**Files created:**
+- `package.json` — Bun project config with type-check/test scripts
+- `tsconfig.json` — ES2022 target, strict mode, noEmit
+- `src/game/Game.ts` — Game class with RAF loop (start/stop/tick/render)
+- `src/game/Game.test.ts` — 28 tests for Game class lifecycle and edge cases
+- `src/index.ts` — Entry point with canvas initialization
+- `src/project-structure.test.ts` — 23 tests for project file structure
+- `public/index.html` — HTML shell with 800x600 canvas
+
+**Test results:** 51 pass, 0 fail, 58 expect() calls
+**Type-check:** Clean (zero errors)
+
+**Adversarial review status:**
+- RED gate: qwen2.5-coder:14b approved after 3 cycles (added edge cases, behavioral tests, structural content validation)
+- GREEN gate: SKIPPED — Ollama models exceed available system memory (10.1 GiB vs 13.3+ GiB required). Documented in commit message.
+
+**Key design decisions:**
+- Delta time clamped to 100ms max to prevent runaway degradation after tab-away periods
+- Game constructor accepts optional canvas for headless operation (testing/server)
+- `start()` is idempotent; `stop()` is safe when not running
+- tick() receives pre-clamped deltaTime from the loop
