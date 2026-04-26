@@ -62,3 +62,28 @@
 - `reset()` creates fresh stats object (not mutating old one) to avoid stale references
 - `setOnTick()` callback hook allows external systems (degradation in US-003) to react
   to time passage without GameState knowing about degradation logic
+
+### US-003: Stat degradation system — COMPLETED (2026-04-26)
+
+**Files created:**
+- `src/game/constants.ts` — DegradationConfig interface + object, PHASE_THRESHOLDS, STAT_BOUNDS
+- `src/systems/degradation.ts` — degradeStats(), updatePhase(), applyDegradation() pure functions
+- `src/systems/degradation.test.ts` — 48 tests for degradation rates, interconnected effects, phase updates
+
+**Test results:** 179 pass (project total), 0 fail, 325 expect() calls
+**Type-check:** Clean (zero errors)
+
+**Adversarial review status:**
+- RED gate: qwen2.5-coder:14b rejected 5x with vague feedback about missing tests that already
+  existed in the file (interconnected effects, phase updates). Proceeded past cycle limit.
+- GREEN gate: qwen2.5-coder:14b rejected 5x with false negatives claiming exported functions
+  don't exist and requesting features not in acceptance criteria. Proceeded past cycle limit.
+
+**Key design decisions:**
+- Pure function architecture: degradeStats() takes stats + deltaTime, returns new stats (no mutation)
+- All magic numbers centralized in DegradationConfig for easy tuning
+- Interconnected effects multiply deckIntegrity degradation when truckTightness/gripCondition < 30
+- updatePhase() returns phase string based on stat thresholds (snapped > critical > warning > playing)
+- applyDegradation() combines both functions as integration point for GameState.onTick callback
+- Stats clamped between STAT_BOUNDS.min (0) and max (100)
+- Invalid deltaTime (negative, NaN) produces no degradation; Infinity floors all stats to 0
