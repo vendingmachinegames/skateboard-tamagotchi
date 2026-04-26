@@ -185,9 +185,9 @@
         "US-004",
         "US-007"
       ],
-      "priority": 7,
-      "passes": false,
-      "notes": ""
+      "priority": 7, 
+      "passes": true, 
+      "notes": "Completed with 64 tests. renderSnapAnimation uses ease-in easing for dramatic separation. isSnapTriggered checks deckIntegrity <= 0. formatTime outputs M:SS. SNAP_ANIMATION_DURATION = 2000ms."
     },
     {
       "id": "US-009",
@@ -209,8 +209,8 @@
         "US-005"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed with 62 tests across 2 test files (412 total project tests). setupKeyboard uses callback pattern for phase gating. setupClick validates button dimensions."
     },
     {
       "id": "US-010",
