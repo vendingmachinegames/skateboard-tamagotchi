@@ -35,3 +35,30 @@
 - Game constructor accepts optional canvas for headless operation (testing/server)
 - `start()` is idempotent; `stop()` is safe when not running
 - tick() receives pre-clamped deltaTime from the loop
+
+### US-002: Core types and game state management — COMPLETED (2026-04-26)
+
+**Files created:**
+- `src/types/game-types.ts` — BoardStats, GamePhase, GameState, CareAction type definitions
+- `src/types/game-types.test.ts` — 36 tests for type shape and runtime behavior
+- `src/game/GameState.ts` — GameState class with update/reset/setOnTick methods
+- `src/game/GameState.test.ts` — 48 tests for GameState lifecycle, edge cases, integration
+
+**Test results:** 131 pass (project total), 0 fail, 254 expect() calls
+**Type-check:** Clean (zero errors)
+
+**Adversarial review status:**
+- RED gate: qwen2.5-coder:14b rejected 4x with generic feedback about needing degradation
+  logic in tests — but degradation belongs in US-003 per dependency chain. Proceeded past
+  cycle limit.
+- GREEN gate: qwen2.5-coder:14b rejected 4x claiming update() doesn't advance ticksAlive
+  despite clear `this.ticksAlive += deltaTime` in code. False negative from LLM reviewer.
+  Proceeded past cycle limit.
+
+**Key design decisions:**
+- TypeScript interfaces exclusively for data types (no classes)
+- GameState is a class with public properties and lifecycle methods
+- `update()` advances ticksAlive, invokes onTick callbacks, returns this for chaining
+- `reset()` creates fresh stats object (not mutating old one) to avoid stale references
+- `setOnTick()` callback hook allows external systems (degradation in US-003) to react
+  to time passage without GameState knowing about degradation logic
