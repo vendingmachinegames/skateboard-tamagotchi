@@ -1,0 +1,239 @@
+{
+  "project": "skateboard-tamagotchi",
+  "branchName": "ralph/skateboard-tamagotchi",
+  "prdFile": "prd.md",
+  "description": "A browser-based tamagotchi game where you care for a skateboard that degrades over time and can snap in two if neglected",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Project scaffolding and game loop",
+      "description": "As a developer, I want the project scaffolded with Bun + TypeScript and a working game loop so that subsequent stories have a foundation to build on",
+      "acceptanceCriteria": [
+        "package.json exists with bun as runtime and typescript as dependency",
+        "tsconfig.json configured for ES2022 target with strict mode enabled",
+        "src/index.ts entry point exists and runs without errors via `bun run src/index.ts`",
+        "Game class in src/game/Game.ts implements a requestAnimationFrame-based game loop",
+        "Game loop exposes start(), stop(), and tick(deltaTime) methods",
+        "public/index.html contains a <canvas> element with id 'game-canvas' sized 800x600",
+        "bun run type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Greenfield project. Initialize with `bun init`. Install typescript: `bun add --dev typescript @types/node`. Configure tsconfig.json for module: ESNext, target: ES2022, strict: true. Game loop should track last timestamp and calculate deltaTime each frame.",
+      "dependsOn": [],
+      "priority": 1,
+      "passes": true,
+      "notes": "Completed with 51 tests. Game class uses RAF loop with delta clamping."
+    },
+    {
+      "id": "US-002",
+      "title": "Core types and game state management",
+      "description": "As a developer, I want core type definitions and a GameState manager so that all game systems share a single source of truth",
+      "acceptanceCriteria": [
+        "src/types/game-types.ts defines BoardStats interface with deckIntegrity, wheelWear, truckTightness, gripCondition (all number 0-100)",
+        "src/types/game-types.ts defines GamePhase type as union: 'new' | 'playing' | 'warning' | 'critical' | 'snapped' | 'paused'",
+        "src/types/game-types.ts defines GameState interface with stats, phase, score, ticksAlive, lastTick fields",
+        "src/types/game-types.ts defines CareAction interface with id, label, shortcut, cooldown, lastUsed, effects fields",
+        "src/game/GameState.ts exports a GameState class that initializes all stats to 100 on construction",
+        "GameState.update(deltaTime) method advances ticksAlive and returns updated state",
+        "GameState.reset() restores all stats to 100 and phase to 'new'",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Create src/types/ directory. Use TypeScript interfaces exclusively (no classes for data types). GameState should be a class with private state and public methods. Follow the type definitions from prd.md Technical Context section.",
+      "dependsOn": [
+        "US-001"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Completed with 84 tests across 2 test files (131 total project tests). GameState uses setOnTick callback hook for external degradation systems."
+    },
+    {
+      "id": "US-003",
+      "title": "Stat degradation system",
+      "description": "As a player, I want my skateboard's stats to degrade over time so that I must actively maintain it",
+      "acceptanceCriteria": [
+        "src/systems/degradation.ts exports a degradeStats(stats, deltaTime) function",
+        "Each stat degrades at a configurable rate per second (defined in src/game/constants.ts)",
+        "Base degradation rates: deckIntegrity 0.5%/sec, wheelWear 1.2%/sec, truckTightness 0.8%/sec, gripCondition 1.0%/sec",
+        "Interconnected effects: if truckTightness < 30, deckIntegrity degrades 2x faster; if gripCondition < 30, deckIntegrity degrades 1.5x faster",
+        "Stats floor at 0 (never go negative)",
+        "Game phase auto-updates: 'warning' when any stat < 30, 'critical' when any stat < 10",
+        "src/game/constants.ts exports all degradation rates as a DegradationConfig object",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Create src/systems/ and src/game/ directories. degradation.ts should be pure functions taking stats and deltaTime, returning new stats. Use constants.ts for all magic numbers. Test interconnected effects with edge cases (both truckTightness and gripCondition below 30).",
+      "dependsOn": [
+        "US-002"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Completed with 48 tests. Pure function degradation system with interconnected effects and phase auto-updates. Constants centralized in DegradationConfig."
+    },
+    {
+      "id": "US-004",
+      "title": "Skateboard canvas rendering",
+      "description": "As a player, I want to see my skateboard rendered on screen so that I can visually track its condition",
+      "acceptanceCriteria": [
+        "src/render/board-renderer.ts exports a renderBoard(ctx, stats) function",
+        "Skateboard drawn as a top-down view: rectangular deck (brown wood color), grip tape strip (black), trucks (gray rectangles), wheels (white circles)",
+        "Board centered on canvas at coordinates calculated from canvas width/height",
+        "Board dimensions: deck 120px wide x 320px tall, wheels 24px diameter, trucks 60px wide",
+        "renderBoard accepts BoardStats and adjusts visual appearance based on stats (color shifts toward damaged look as stats drop)",
+        "Wheel color darkens as wheelWear decreases; deck browns/darkens as deckIntegrity decreases",
+        "src/render/board-renderer.ts exports a CANVAS_WIDTH and CANVAS_HEIGHT constant matching index.html canvas size",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Use Canvas2DContext API. Board should be drawn with ctx.fillRect, ctx.arc, ctx.beginPath etc. No external rendering libraries. Keep draw functions pure \u2014 accept ctx and data, produce side effects on canvas only. Test by verifying functions execute without throwing given a mock CanvasRenderingContext2D.",
+      "dependsOn": [
+        "US-002"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Completed with 37 tests. Color interpolation system for deck/wheel/truck based on stats."
+    },
+    {
+      "id": "US-005",
+      "title": "Care action system with cooldowns",
+      "description": "As a player, I want to perform care actions on my skateboard so that I can restore its stats and prevent damage",
+      "acceptanceCriteria": [
+        "src/systems/care-actions.ts exports an array of CareAction objects: 'tighten-trucks', 'replace-wheels', 'sand-grip-tape', 'apply-wax'",
+        "Each action restores specific stats: tighten-trucks (+25 truckTightness), replace-wheels (+30 wheelWear), sand-grip-tape (+25 gripCondition), apply-wax (+15 all stats)",
+        "Each action has a cooldown: tighten-trucks 8s, replace-wheels 15s, sand-grip-tape 10s, apply-wax 20s",
+        "canPerformAction(actionId, actions, currentTime) returns false if action is on cooldown",
+        "performAction(actionId, state, currentTime) applies stat effects (capped at 100), updates lastUsed, increments score by 10",
+        "apply-wax has no shortcut key initially (reserved for future expansion)",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Care actions defined as const array of CareAction objects. performAction should be a pure function: takes state + actionId + timestamp, returns new state. Cooldowns tracked via lastUsed timestamp on each action. Stats capped at 100 using Math.min.",
+      "dependsOn": [
+        "US-002",
+        "US-003"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Completed with 46 tests. CARE_ACTIONS array with 4 actions, canPerformAction cooldown check, performAction pure state transformation."
+    },
+    {
+      "id": "US-006",
+      "title": "Status bar UI overlay",
+      "description": "As a player, I want to see visual status bars for each stat so that I can quickly assess my board's condition",
+      "acceptanceCriteria": [
+        "src/render/ui-renderer.ts exports renderStatusBar(ctx, stats) function",
+        "Four horizontal bars rendered at top of canvas: Deck Integrity, Wheel Wear, Truck Tightness, Grip Condition",
+        "Each bar shows label text and a filled rectangle proportional to stat value (0-100%)",
+        "Bar colors: green when stat > 60%, orange when 30-60%, red when < 30%",
+        "Score displayed as text in top-right corner",
+        "Care action buttons rendered as labeled rectangles below the status bars",
+        "Buttons show cooldown timer (remaining seconds) when on cooldown, dimmed appearance",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Use Canvas2DContext for all UI rendering \u2014 no DOM overlay. renderStatusBar draws filled rectangles for bars, ctx.fillText for labels. Button hit regions tracked as an array of {id, x, y, w, h} objects returned by renderButtons() for click detection. Color interpolation: green(0,180,0) \u2192 orange(255,165,0) \u2192 red(220,40,40).",
+      "dependsOn": [
+        "US-002",
+        "US-004"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Completed with 38 tests. renderStatusBar with color-coded bars, renderButtons with cooldown display."
+    },
+    {
+      "id": "US-007",
+      "title": "Damage visuals (cracks and degradation)",
+      "description": "As a player, I want to see my skateboard visually crack and degrade so that the threat of snapping feels real",
+      "acceptanceCriteria": [
+        "src/systems/damage-visuals.ts exports generateCracks(deckIntegrity) returning an array of Crack objects",
+        "Crack object has: startX, startY, points[] (array of {x, y}), severity (0-1)",
+        "When deckIntegrity > 70: no cracks rendered",
+        "When deckIntegrity 40-70: 1-2 hairline cracks appear randomly on deck",
+        "When deckIntegrity 20-40: 3-5 cracks, thicker lines, some branching",
+        "When deckIntegrity < 20: 6+ cracks spanning most of the deck, one major crack forming a split line",
+        "renderCracks(ctx, cracks) draws cracks as jagged black/dark brown lines on canvas",
+        "Crack positions are seeded by ticksAlive so they're deterministic per game session",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Use a simple seeded PRNG (mulberry32 or similar) for deterministic crack generation. Cracks generated as arrays of line segments. renderCracks uses ctx.beginPath/lineTo/stroke with variable line width based on severity. Seed should be derived from game start timestamp so cracks are consistent within a session but different across sessions.",
+      "dependsOn": [
+        "US-003",
+        "US-004"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Board snap animation and game over screen",
+      "description": "As a player, I want a dramatic snap animation when my board breaks so that the stakes feel meaningful and I'm motivated to try again",
+      "acceptanceCriteria": [
+        "Game transitions to 'snapped' phase when deckIntegrity reaches 0",
+        "Snap animation plays over ~2 seconds: board splits along the major crack line, two halves separate with slight rotation",
+        "src/render/effects.ts exports renderSnapAnimation(ctx, progress) where progress is 0-1",
+        "At progress 0: board intact; at progress 0.5: crack widens and halves start separating; at progress 1.0: halves fully separated",
+        "After animation completes, game over screen renders: 'YOUR BOARD SNAPPED' text, final score, time survived",
+        "'Play Again' button rendered on canvas \u2014 clicking it resets the game to a fresh board",
+        "src/render/effects.ts exports renderGameOver(ctx, score, ticksAlive) function",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Snap animation: split the deck drawing into two halves at the major crack line. Use ctx.save/restore and ctx.translate/ctx.rotate to animate separation. Game over text centered on canvas with large font. Play Again button is a styled rectangle \u2014 click detection handled by US-009's click system. Animate using requestAnimationFrame with easing (ease-in for dramatic effect).",
+      "dependsOn": [
+        "US-004",
+        "US-007"
+      ],
+      "priority": 7, 
+      "passes": true, 
+      "notes": "Completed with 64 tests. renderSnapAnimation uses ease-in easing for dramatic separation. isSnapTriggered checks deckIntegrity <= 0. formatTime outputs M:SS. SNAP_ANIMATION_DURATION = 2000ms."
+    },
+    {
+      "id": "US-009",
+      "title": "Keyboard input for care actions",
+      "description": "As a player, I want to use keyboard shortcuts to perform care actions so that I can react quickly when stats are dropping",
+      "acceptanceCriteria": [
+        "src/input/keyboard.ts exports setupKeyboard(canvas, onAction) function that adds keydown listener",
+        "Key bindings: '1' = tighten-trucks, '2' = replace-wheels, '3' = sand-grip-tape, '4' = apply-wax",
+        "Pressing a bound key triggers the corresponding care action via onAction callback with actionId",
+        "Pressing 'p' or 'Escape' toggles game pause/unpause",
+        "Input only processes when game phase is 'playing' (not during snapped, new, or paused)",
+        "Keyboard events are preventDefault'd to avoid browser shortcuts interfering",
+        "src/input/click.ts exports setupClick(canvas, buttons, onClick) for mouse click detection on UI buttons",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "keyboard.ts: addEventListener('keydown', ...) on canvas element. Map key codes to action IDs. Pass callback pattern \u2014 don't import GameState directly (keep input layer decoupled). click.ts: addEventListener('click', ...), check if click coordinates fall within any button hit region returned by renderButtons(). Both use functional callbacks for testability.",
+      "dependsOn": [
+        "US-005"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Completed with 62 tests across 2 test files (412 total project tests). setupKeyboard uses callback pattern for phase gating. setupClick validates button dimensions."
+    },
+    {
+      "id": "US-010",
+      "title": "localStorage persistence (save/load)",
+      "description": "As a player, I want my game to save automatically so that I don't lose progress if I close the browser",
+      "acceptanceCriteria": [
+        "src/persistence/save-load.ts exports saveGame(state) and loadGame() functions",
+        "saveGame serializes GameState to JSON and stores in localStorage under key 'skateboard-tamagotchi-save'",
+        "loadGame reads from localStorage, parses JSON, returns GameState or null if no save exists",
+        "Game auto-saves every 10 seconds during playing phase (timer in Game.ts)",
+        "On game initialization, loadGame is called \u2014 if save exists, state is restored; otherwise fresh board",
+        "Saved state includes: stats, score, ticksAlive, cracks seed; excludes lastTick (reset on load)",
+        "localStorage errors (quota exceeded, disabled) are caught and logged without crashing",
+        "Type-check passes with zero errors",
+        "Tests pass"
+      ],
+      "technicalNotes": "Use try/catch around localStorage.get/setItem. saveGame should serialize a copy of state (not the live object). On load, validate that returned data has expected fields before applying. Auto-save timer: track elapsed time in game loop, trigger save every 10000ms. For testing, mock localStorage with a simple in-memory Map.",
+      "dependsOn": [
+        "US-002"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

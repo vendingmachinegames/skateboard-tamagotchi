@@ -1,0 +1,959 @@
+name: tdd-dev
+description: |
+  Use when: User wants to implement stories using Test-Driven Development (Red-Green-Refactor).
+  Triggers: "tdd", "tdd dev", "tdd development", "test driven", "test-driven dev",
+            "implement with tests", "red green refactor", "rtd" (Ralph TDD).
+
+  Adversarial TDD workflow — qwen3.6-27b builds, qwen2.5-coder:14b attacks:
+  1. Detects input (prd.json, prd.md, or raw idea) — same as Ralph
+  2. Reviews story granularity with qwen2.5-coder (read-only analysis)
+  3. Validates PRD, reads project context, installs deps + test framework
+  4. Runs TDD loop per story with adversarial review gates:
+     - RED: qwen writes tests → qwen2.5-coder attacks the tests via Ollama API (per-iteration)
+     - GREEN: qwen implements minimum code → qwen2.5-coder reviews against AC via Ollama API (per-iteration)
+     - REFACTOR: qwen cleans up, tests stay green
+  5. Post-loop adversarial review by qwen2.5-coder (visible DAG nodes):
+     - red-gate: holistic test suite review
+     - green-gate: holistic implementation review
+  6. Creates draft PR → human approves → release mode (merge, tag, deploy)
+
+  Key difference from Ralph: tests FIRST, adversarial review by a DIFFERENT model at every phase,
+  human approval only at the final PR stage.
+
+  Accepts: An idea description, a path to an existing prd.md, or a directory with prd.md + prd.json
+
+provider: pi
+
+nodes:
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 1: DETECT INPUT — Determine what the user provided
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: detect-input
+    model: llama-swap/qwen3.6-27b-ud-q4
+    prompt: |
+      # Detect TDD Input
+
+      **User input**: $ARGUMENTS
+
+      Determine what the user provided and prepare the PRD directory. Follow these steps exactly:
+
+      ## Step 1: Detect worktree
+
+      Run `git worktree list --porcelain` to check if you're in a worktree.
+      If you see multiple entries, you ARE in a worktree. The first entry (the one without "branch" pointing to your current branch) is the **main repo root**. Save it — you'll need it to find files.
+
+      ## Step 2: Classify the input
+
+      Look at the user input above. It's one of three things:
+
+      **Case A — Ralph directory path** (contains `.archon/ralph/` or `.archon/tdd/`):
+      Extract the directory. Check if both `prd.json` and `prd.md` exist there (try locally first, then in the main repo root if in a worktree).
+
+      **Case B — File path** (ends in `.md`):
+      This is an external PRD file. Find it:
+      1. Try the path as-is (relative to cwd)
+      2. Try it as an absolute path
+      3. If in a worktree, try it relative to the **main repo root** from Step 1
+
+      **Case C — Free text**:
+      Not a file path — it's a feature idea.
+
+      ## Step 3: Auto-discover existing PRDs
+
+      If the input didn't point to a specific path, check if `.archon/ralph/` or `.archon/tdd/` contains any `prd.json` files:
+      ```bash
+      find .archon/ralph .archon/tdd -name "prd.json" -type f 2>/dev/null
+      ```
+
+      ## Step 4: Take action based on classification
+
+      **If Case A and both files exist** → output `ready` (no further action needed)
+
+      **If Case B (external PRD found)**:
+      1. Derive a kebab-case slug from the PRD filename or title
+      2. Create the tdd directory: `mkdir -p .archon/tdd/{slug}`
+      3. Copy the PRD content to `.archon/tdd/{slug}/prd.md`
+      4. Output `external_prd` with the new prd_dir
+
+      **If Case C or auto-discovered dir has prd.md but no prd.json** → output `needs_generation`
+
+      ## Output
+
+      Your final output MUST be exactly one JSON object:
+      ```json
+      {"input_type": "ready|external_prd|needs_generation", "prd_dir": ".archon/tdd/{slug}"}
+      ```
+    output_format:
+      type: object
+      properties:
+        input_type:
+          type: string
+          enum: [ready, external_prd, needs_generation]
+        prd_dir:
+          type: string
+      required: [input_type, prd_dir]
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 2: GENERATE PRD + STORIES (if needed)
+  # Skipped if prd.json already exists.
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: generate-prd
+    depends_on: [detect-input]
+    when: "$detect-input.output.input_type != 'ready'"
+    command: archon-ralph-generate
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 3: REVIEW STORY GRANULARITY (qwen2.5-coder — read-only analysis)
+  # Checks stories are small enough for single TDD iterations.
+  # Advisory only — no human gate here, stories flow straight through.
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: review-stories
+    depends_on: [detect-input, generate-prd]
+    trigger_rule: one_success
+    model: local-ollama/qwen2.5-coder:14b
+    allowed_tools: [Read, Bash]
+    prompt: |
+      # Story Granularity Review
+
+      You are reviewing user stories to ensure they are small enough for a single
+      TDD iteration (one Red-Green-Refactor cycle per story).
+
+      ## Context
+
+      Extract the `PRD_DIR` from detect-input output, or discover it:
+      ```bash
+      PRD_DIR=$detect-input.output.prd_dir
+      if [ -z "$PRD_DIR" ] || [ ! -f "$PRD_DIR/prd.json" ]; then
+        FOUND=$(find .archon/ralph .archon/tdd -name "prd.json" -type f 2>/dev/null | head -1)
+        PRD_DIR=$(dirname "$FOUND")
+      fi
+      ```
+
+      Read both `prd.json` and `prd.md` from that directory. Also read `CLAUDE.md` if it exists.
+
+      ## Granularity Rules
+
+      A story is **too large** if: more than 5 AC, touches >3 files, has multiple distinct behaviors, or would take >30 min in one TDD cycle.
+      A story is **good size** if: 1-3 AC, changes 1-2 files, tests one clear behavior.
+
+      ## Output Format
+
+      ```
+      STORY GRANULARITY REVIEW
+      Total stories: {N} | OK: {count} | Too large: {count}
+
+      | ID | Title | Size | Verdict | Issues |
+      |----|-------|------|---------|--------|
+      | US-001 | ... | Small | OK | — |
+
+      Recommendation: GO / NEEDS-SPLITS
+      ```
+
+      End with JSON:
+      ```json
+      {"verdict": "go|needs-splits", "total_stories": N, "stories_ok": N, "stories_too_large": N}
+      ```
+    output_format:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [go, needs-splits]
+        total_stories:
+          type: number
+        stories_ok:
+          type: number
+        stories_too_large:
+          type: number
+      required: [verdict, total_stories, stories_ok, stories_too_large]
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 4: VALIDATE & SETUP — Install deps, detect framework, output context
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: validate-setup
+    depends_on: [review-stories]
+    bash: |
+      set -e
+
+      PRD_DIR=$detect-input.output.prd_dir
+      if [ -z "$PRD_DIR" ] || [ ! -f "$PRD_DIR/prd.json" ]; then
+        FOUND=$(find .archon/ralph .archon/tdd -name "prd.json" -type f 2>/dev/null | head -1)
+        [ -n "$FOUND" ] && PRD_DIR=$(dirname "$FOUND")
+      fi
+
+      if [ -z "$PRD_DIR" ] || [ ! -f "$PRD_DIR/prd.json" ]; then
+        echo "ERROR: No prd.json found."; exit 1
+      fi
+      [ ! -f "$PRD_DIR/prd.md" ] && { echo "ERROR: prd.md not found in $PRD_DIR"; exit 1; }
+
+      # Install dependencies
+      if [ -f "bun.lock" ] || [ -f "bun.lockb" ]; then
+        bun install --frozen-lockfile 2>&1 | tail -3
+      elif [ -f "package-lock.json" ]; then npm ci 2>&1 | tail -3; fi
+
+      # Detect project type and test framework
+      echo ""; echo "=== PROJECT DETECTION ==="
+      HAS_VITE=false; HAS_NEXTJS=false; HAS_NODE=false; HAS_PYTHON=false; HAS_RUST=false
+      ([ -f "vite.config.ts" ] || [ -f "vite.config.js" ]) && HAS_VITE=true
+      ([ -f "next.config.js" ] || [ -f "next.config.mjs" ]) && HAS_NEXTJS=true
+      [ -f "package.json" ] && HAS_NODE=true
+      ([ -f "pyproject.toml" ] || [ -f "requirements.txt" ]) && HAS_PYTHON=true
+      [ -f "Cargo.toml" ] && HAS_RUST=true
+      echo "Vite=$HAS_VITE NextJS=$HAS_NEXTJS Node=$HAS_NODE Python=$HAS_PYTHON Rust=$HAS_RUST"
+
+      TEST_FRAMEWORK="none"
+      ([ -f "vitest.config.ts" ] || [ -f "vitest.config.js" ]) && TEST_FRAMEWORK="vitest"
+      grep -q '"jest"' package.json 2>/dev/null && TEST_FRAMEWORK="jest"
+      echo "TEST_FRAMEWORK=$TEST_FRAMEWORK"
+
+      # Git state
+      echo "BRANCH=$(git branch --show-current)"
+      echo "GIT_ROOT=$(git rev-parse --show-toplevel)"
+      echo "PRD_DIR=$PRD_DIR"
+
+      # Output PRD context
+      echo "=== PRD_JSON_START ==="; cat "$PRD_DIR/prd.json"; echo ""
+      echo "=== PRD_JSON_END ==="
+      echo "=== PRD_MD_START ==="; cat "$PRD_DIR/prd.md"; echo ""
+      echo "=== PRD_MD_END ==="
+      echo "=== PROGRESS_START ==="
+      [ -f "$PRD_DIR/progress.txt" ] && cat "$PRD_DIR/progress.txt" || echo "(no progress yet)"
+      echo ""; echo "=== PROGRESS_END ==="
+
+      TOTAL=$(grep -c '"passes"' "$PRD_DIR/prd.json" || true)
+      DONE=$(grep -c '"passes": true' "$PRD_DIR/prd.json" || true)
+      echo "STORIES_TOTAL=${TOTAL:-0}"; echo "STORIES_DONE=${DONE:-0}"
+      echo "STORIES_REMAINING=$(( ${TOTAL:-0} - ${DONE:-0} ))"
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 5: TDD LOOP — Adversarial Red-Green-Refactor per story
+  # qwen3.6-27b builds, qwen2.5-coder:14b attacks via Ollama API at each gate.
+  # Per-iteration gates use subprocess calls (DAG nodes can't interleave mid-loop).
+  # Post-loop holistic review is handled by red-gate and green-gate nodes.
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: tdd-loop
+    depends_on: [validate-setup]
+    idle_timeout: 600000
+    model: llama-swap/qwen3.6-27b-ud-q4
+    loop:
+      prompt: |
+        # TDD Agent — Adversarial Red-Green-Refactor Story Implementation
+
+        You are an autonomous TDD coding agent in a FRESH session.
+        Your job: Read state from disk, pick one story, implement it using strict TDD with adversarial review gates, validate, commit, update tracking, exit.
+
+        **Golden Rule**: Test FIRST. Never write implementation code before its test exists and fails.
+        **Second Rule**: If validation fails, fix it before committing. Never commit broken code.
+        **Third Rule**: DeepSeek-r1:14b independently reviews your work via Ollama API at RED and GREEN gates.
+          When it rejects your work, FIX THE ISSUES — do not argue or skip the gate.
+
+        ## Adversarial Review Mechanism (Per-Iteration)
+
+        After RED and GREEN phases, you MUST call qwen2.5-coder:14b via the Ollama API for independent review.
+        This is a DIFFERENT model with different training — it catches things you can't see in your own work.
+
+        **Current review model**: `qwen2.5-coder:14b` (configured in `.archon/workflows/deepseek-review.py`).
+        To change the review model, set `TDD_REVIEW_MODEL=qwen2.5-coder:14b` or any other Ollama model.
+
+        A helper script is available at `.archon/workflows/deepseek-review.py`. Copy it to /tmp first:
+        ```bash
+        cp .archon/workflows/deepseek-review.py /tmp/deepseek-review.py 2>/dev/null || true
+        ```
+
+        **Usage:**
+        ```bash
+        # Test review (after RED phase):
+        python3 /tmp/deepseek-review.py tests US-001 "Story Title" "AC line 1|AC line 2|AC line 3" path/to/test1.test.tsx path/to/test2.test.tsx
+
+        # Code review (after GREEN phase):
+        python3 /tmp/deepseek-review.py code US-001 "Story Title" "AC line 1|AC line 2|AC line 3" path/to/impl1.tsx path/to/impl2.tsx
+        ```
+
+        The script outputs the review text, then ends with:
+        - `DEEPSEEK_APPROVED=YES` — proceed to next phase
+        - `DEEPSEEK_APPROVED=NO` — fix the issues identified, then re-submit (max 5 cycles per gate)
+        - `DEEPSEEK_APPROVED=UNKNOWN` — API error, retry once with longer timeout, then proceed with a note
+
+        ---
+
+        ## Phase 0: CONTEXT — Load Project State
+
+        The upstream setup node produced this context:
+
+        $validate-setup.output
+
+        **User message**: $USER_MESSAGE
+
+        Extract `PRD_DIR=...` from the context above.
+
+        ### Read Current State (from disk)
+
+        **You MUST re-read from disk:**
+        1. Read `{prd-dir}/progress.txt` — check `## Codebase Patterns` section FIRST
+        2. Read `{prd-dir}/prd.json` — source of truth for story completion
+        3. Read `{prd-dir}/prd.md` — full requirements, technical patterns
+        4. Run: `cat CLAUDE.md 2>/dev/null || echo "(no CLAUDE.md)"`
+
+        ### Detect Test Framework
+
+        From setup context, extract `TEST_FRAMEWORK=...`.
+
+        If `TEST_FRAMEWORK=none`, install one appropriate for the project:
+        - Vite + React → vitest + @testing-library/react
+        - Next.js → jest (built-in)
+        - Node → vitest
+        - Python → pytest
+        - Rust → cargo test (built-in)
+
+        **PHASE_0_CHECKPOINT:**
+        - [ ] PRD directory identified
+        - [ ] progress.txt, prd.json, prd.md read from disk
+        - [ ] CLAUDE.md rules noted
+        - [ ] Test framework detected or installed
+
+        ---
+
+        ## Phase 1: SELECT — Pick Next Story
+
+        Find the **highest priority** story where `passes: false` and all `dependsOn` stories have `passes: true`.
+
+        **If ALL stories pass** → Skip to Phase 7 (Completion).
+
+        Announce selection and emit event:
+        ```bash
+        bun run cli workflow event emit --run-id $WORKFLOW_ID --type ralph_story_started --data '{"story_id":"{id}","title":"{title}"}' || true
+        ```
+
+        **PHASE_1_CHECKPOINT:**
+        - [ ] Eligible story found
+        - [ ] Acceptance criteria understood
+
+        ---
+
+        ## Phase 2: RED — Write Failing Tests
+
+        ### 2.1 Write the Test File
+
+        Colocate tests: `src/components/X.test.tsx` next to implementation.
+        Match project's existing test patterns (read existing `.test.*` files first).
+        **Every acceptance criterion gets at least one test case.**
+
+        ### 2.2 Verify Tests FAIL
+
+        ```bash
+        bun run test 2>&1 || npm test 2>&1 || yarn test 2>&1 || pnpm test 2>&1
+        ```
+
+        **Tests MUST fail.** If they pass immediately, the test is wrong — fix it.
+
+        ### 2.3 ADVERSARIAL GATE: DeepSeek Test Review (Ollama API)
+
+        Call qwen2.5-coder:14b to independently review your tests:
+        ```bash
+        python3 /tmp/deepseek-review.py tests STORY_ID "STORY_TITLE" "AC_LINE_1|AC_LINE_2" TEST_FILE_1 TEST_FILE_2
+        ```
+
+        **If DEEPSEEK_APPROVED=NO:**
+        1. Read the issues the reviewer identified
+        2. Fix your tests to address each issue
+        3. Re-verify tests still fail (RED)
+        4. Re-submit for review (max 5 cycles per gate)
+
+        **If DEEPSEEK_APPROVED=UNKNOWN or API error:**
+        - Retry once, then log the error and proceed with a note in progress.txt
+
+        **RED PHASE CHECKPOINT:**
+        - [ ] Test file created/updated
+        - [ ] Tests cover all acceptance criteria
+        - [ ] Tests FAIL (confirmed with test runner)
+        - [ ] DeepSeek adversarial review PASSED (or 5-cycle limit reached with documented disagreement)
+
+        ---
+
+        ## Phase 3: GREEN — Minimum Implementation
+
+        ### 3.1 Implement Just Enough
+
+        Write only the code needed to make each failing test pass. Hard-code if needed (refactor later).
+
+        ### 3.2 Verify Types After Each File
+
+        ```bash
+        bun run type-check 2>&1 || npx tsc --noEmit 2>&1 || true
+        ```
+
+        ### 3.3 Verify Tests PASS
+
+        ```bash
+        bun run test 2>&1 || npm test 2>&1 || yarn test 2>&1 || pnpm test 2>&1
+        ```
+
+        **ALL tests must pass.** Fix implementation, not tests. Max 5 attempts.
+
+        ### 3.4 ADVERSARIAL GATE: DeepSeek Code Review (Ollama API)
+
+        Call qwen2.5-coder:14b to independently review your implementation:
+        ```bash
+        python3 /tmp/deepseek-review.py code STORY_ID "STORY_TITLE" "AC_LINE_1|AC_LINE_2" IMPL_FILE_1 IMPL_FILE_2
+        ```
+
+        **If DEEPSEEK_APPROVED=NO:**
+        1. Fix the implementation to address each issue
+        2. Re-verify tests still pass
+        3. Re-submit for review (max 5 cycles per gate)
+
+        **GREEN PHASE CHECKPOINT:**
+        - [ ] All tests pass
+        - [ ] Type-check passes
+        - [ ] DeepSeek adversarial code review PASSED (or 5-cycle limit reached with documented disagreement)
+
+        ---
+
+        ## Phase 4: REFACTOR — Clean Up While Keeping Tests Green
+
+        Run through: naming, duplication, complexity, dead code, pattern alignment.
+        After each refactor change, verify tests still pass.
+
+        Final validation:
+        ```bash
+        bun run type-check && bun run lint 2>&1 || true
+        bun run lint:fix 2>&1 || true
+        bun run format 2>&1 || true
+        ```
+
+        **REFACTOR PHASE CHECKPOINT:**
+        - [ ] Code clean, follows project patterns
+        - [ ] Tests still pass after refactoring
+        - [ ] Lint and format clean
+
+        ---
+
+        ## Phase 5: VERIFY — Acceptance Criteria Check
+
+        Go through EACH acceptance criterion:
+        - Is there a test that validates it?
+        - Does that test pass?
+        - Can you verify the implementation satisfies the criterion by reading the code?
+
+        **PHASE_5_CHECKPOINT:**
+        - [ ] Every AC has a corresponding passing test
+        - [ ] Implementation verified against each criterion
+
+        ---
+
+        ## Phase 6: COMMIT — Save Changes
+
+        ```bash
+        git add -A
+        git diff --cached --stat
+        git commit -m "feat: {story-title}
+
+        TDD Implements {story-id}. Tests first, then minimum impl, then refactored.
+        Adversarial review by qwen2.5-coder:14b at RED and GREEN gates."
+        ```
+
+        **PHASE_6_CHECKPOINT:**
+        - [ ] Only expected files committed
+        - [ ] Working directory clean
+
+        ---
+
+        ## Phase 7: TRACK — Update Progress Files
+
+        ### 7.1 Update prd.json
+        Set `passes: true` for the completed story.
+
+        Emit event:
+        ```bash
+        bun run cli workflow event emit --run-id $WORKFLOW_ID --type ralph_story_completed --data '{"story_id":"{id}","title":"{title}"}' || true
+        ```
+
+        ### 7.2 Update progress.txt
+        Append iteration details including adversarial review status.
+
+        ### 7.3 Update Codebase Patterns
+        Prepend any reusable patterns discovered to the top of progress.txt.
+
+        **PHASE_7_CHECKPOINT:**
+        - [ ] prd.json updated
+        - [ ] progress.txt appended
+        - [ ] Patterns updated if applicable
+
+        ---
+
+        ## Phase 8: COMPLETE — Check All Stories
+
+        Re-read prd.json. Count stories where `passes: false`.
+
+        ### If ALL Stories Pass
+
+        1. Generate coverage: `bun run test --coverage 2>&1 || true`
+        2. Push: `git push -u origin HEAD`
+        3. Output: `<promise>COMPLETE</promise>`
+
+        ### If Stories Remain
+
+        Report status and end normally — next iteration picks up where you left off.
+
+        ---
+
+        ## Handling Edge Cases
+
+        **DeepSeek review timeout or error:**
+        - Retry once with `--max-time 180`
+        - If still failing, log the error in progress.txt and proceed (document the skipped gate)
+
+        **Tests won't fail (RED stuck):**
+        - Functionality may already exist — verify and mark criteria satisfied
+        - Make tests more specific if trivially passing
+
+        **Tests won't pass (GREEN stuck):**
+        - After 5 attempts, re-read acceptance criteria
+        - Note blocker in progress.txt and end iteration
+
+        **Story too large:**
+        - Implement most critical AC first
+        - Leave `passes: false` if incomplete — next iteration continues
+
+        ---
+
+        ## Success Criteria
+
+        - **ONE_STORY**: Exactly one story per iteration
+        - **RED_FIRST**: Tests written and verified failing before implementation
+        - **ADVERSARIAL_REVIEW**: DeepSeek-r1:14b independently reviews tests AND code via Ollama API at every story
+        - **GREEN_NEXT**: Minimum implementation makes all tests pass
+        - **REFACTOR_LAST**: Code cleaned up while tests stay green
+        - **VALIDATED**: Type-check + lint + tests + format all pass before commit
+        - **TRACKED**: prd.json and progress.txt updated accurately
+        - **NO_SCOPE_CREEP**: No unrelated changes
+      until: COMPLETE
+      max_iterations: 20
+      fresh_context: true
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 6: RED GATE — Qwen Coder holistic test suite review (VISIBLE NODE)
+  # Runs AFTER tdd-loop completes. Reviews ALL test files together.
+  # qwen2.5-coder:14b does a comprehensive adversarial review of the full test suite.
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: red-gate
+    depends_on: [tdd-loop]
+    model: local-ollama/qwen2.5-coder:14b
+    allowed_tools: [Read, Bash]
+    prompt: |
+      # Adversarial Test Suite Review — RED GATE (Post-Loop)
+
+      You are an adversarial test reviewer. The TDD loop has completed implementing
+      multiple stories. Your job is to do a COMPREHENSIVE review of the ENTIRE test suite.
+
+      ## Context
+
+      Setup context:
+      $validate-setup.output
+
+      TDD loop output (last iteration):
+      $tdd-loop.output
+
+      Extract `PRD_DIR=...` from setup context.
+
+      ## Discover and Read All Test Files
+
+      ```bash
+      # Find all test files created/modified in this branch
+      PRD_DIR=$validate-setup.output | grep -o 'PRD_DIR=\S*' | cut -d= -f2
+      if [ -z "$PRD_DIR" ] || [ ! -f "$PRD_DIR/prd.json" ]; then
+        FOUND=$(find .archon/ralph .archon/tdd -name "prd.json" -type f 2>/dev/null | head -1)
+        PRD_DIR=$(dirname "$FOUND")
+      fi
+
+      # Find test files
+      TEST_FILES=$(find . -name "*.test.*" -o -name "*.spec.*" 2>/dev/null | grep -v node_modules | sort)
+      echo "Found test files:"
+      echo "$TEST_FILES"
+
+      # Read prd.json for acceptance criteria context
+      cat "$PRD_DIR/prd.json"
+      ```
+
+      Read EACH test file found. Also read `CLAUDE.md` if it exists.
+
+      ## Review Criteria
+
+      Evaluate the ENTIRE test suite against these criteria:
+
+      1. **AC Coverage**: Does every acceptance criterion from prd.json have at least one meaningful test?
+      2. **Anti-Triviality**: Would naive hardcoded implementations pass any of these tests?
+      3. **Edge Cases**: Are null, empty, boundary values, and error states tested across the suite?
+      4. **Mock Integrity**: Are mocks testing the right thing? (mocking dependencies, not the thing being tested)
+      5. **Behavior Focus**: Do tests verify behavior, not implementation details?
+      6. **Cross-Story Interactions**: Are there tests for interactions between stories/features?
+
+      ## Output Format
+
+      First, print a review summary:
+      ```
+      RED GATE — HOLISTIC TEST SUITE REVIEW
+
+      Total test files reviewed: {N}
+      Stories covered: {M}/{T}
+
+      | Criterion | Score (1-10) | Issues |
+      |-----------|-------------|--------|
+      | AC Coverage | N | ... |
+      | Anti-Triviality | N | ... |
+      | Edge Cases | N | ... |
+      | Mock Integrity | N | ... |
+      | Behavior Focus | N | ... |
+      | Cross-Story Tests | N | ... |
+
+      Overall: APPROVED / REJECTED (min score {N})
+      ```
+
+      Then end with JSON:
+      ```json
+      {
+        "approved": true|false,
+        "overall_score": N,
+        "issues": ["specific issue 1", "specific issue 2"],
+        "suggestions": ["fix suggestion 1", "fix suggestion 2"]
+      }
+      ```
+
+      **Be strict.** Tests that would pass against `return {success: true}` should be flagged.
+      Minimum passing score: 7/10 on each criterion, 8/10 overall.
+    output_format:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        overall_score:
+          type: number
+        issues:
+          type: array
+          items: { type: string }
+        suggestions:
+          type: array
+          items: { type: string }
+      required: [approved, overall_score, issues, suggestions]
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 7: GREEN GATE — Qwen Coder holistic implementation review (VISIBLE NODE)
+  # Runs AFTER tdd-loop completes. Reviews ALL implementation files together.
+  # qwen2.5-coder:14b does a comprehensive adversarial review of the full implementation.
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: green-gate
+    depends_on: [red-gate]
+    model: local-ollama/qwen2.5-coder:14b
+    allowed_tools: [Read, Bash]
+    prompt: |
+      # Adversarial Implementation Review — GREEN GATE (Post-Loop)
+
+      You are an adversarial code reviewer. The TDD loop has completed implementing
+      multiple stories. Your job is to do a COMPREHENSIVE review of the ENTIRE implementation.
+
+      ## Context
+
+      Setup context:
+      $validate-setup.output
+
+      TDD loop output (last iteration):
+      $tdd-loop.output
+
+      Red gate review (for reference):
+      $red-gate.output
+
+      Extract `PRD_DIR=...` from setup context.
+
+      ## Discover and Read All Changed Files
+
+      ```bash
+      PRD_DIR=$validate-setup.output | grep -o 'PRD_DIR=\S*' | cut -d= -f2
+      if [ -z "$PRD_DIR" ] || [ ! -f "$PRD_DIR/prd.json" ]; then
+        FOUND=$(find .archon/ralph .archon/tdd -name "prd.json" -type f 2>/dev/null | head -1)
+        PRD_DIR=$(dirname "$FOUND")
+      fi
+
+      # Find changed files (excluding test files, node_modules)
+      BASE_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null || echo "main")
+      CHANGED_FILES=$(git diff --name-only $(git merge-base HEAD $BASE_BRANCH)..HEAD 2>/dev/null | grep -v node_modules | grep -v "\.test\." | grep -v "\.spec\." | sort)
+      echo "Changed implementation files:"
+      echo "$CHANGED_FILES"
+
+      # Read prd.json for acceptance criteria context
+      cat "$PRD_DIR/prd.json"
+      ```
+
+      Read EACH changed implementation file found. Also read `CLAUDE.md` if it exists.
+
+      ## Review Criteria
+
+      Evaluate the ENTIRE implementation against these criteria:
+
+      1. **AC Satisfaction**: Does the implementation actually satisfy EVERY acceptance criterion from prd.json?
+      2. **Anti-Hardcode**: Is there hardcoded data that should be dynamic or conditional?
+      3. **Error Handling**: Are null checks, empty states, and boundary conditions handled consistently?
+      4. **Robustness**: Would this survive a real user trying to break it?
+      5. **Completeness**: Are there any TODOs, stubs, incomplete paths, or placeholder logic?
+      6. **Code Quality**: Naming, duplication, complexity, pattern alignment across all files?
+
+      ## Output Format
+
+      First, print a review summary:
+      ```
+      GREEN GATE — HOLISTIC IMPLEMENTATION REVIEW
+
+      Total implementation files reviewed: {N}
+      Stories covered: {M}/{T}
+
+      | Criterion | Score (1-10) | Issues |
+      |-----------|-------------|--------|
+      | AC Satisfaction | N | ... |
+      | Anti-Hardcode | N | ... |
+      | Error Handling | N | ... |
+      | Robustness | N | ... |
+      | Completeness | N | ... |
+      | Code Quality | N | ... |
+
+      Overall: APPROVED / REJECTED (min score {N})
+      ```
+
+      Then end with JSON:
+      ```json
+      {
+        "approved": true|false,
+        "overall_score": N,
+        "issues": ["specific issue 1", "specific issue 2"],
+        "suggestions": ["fix suggestion 1", "fix suggestion 2"]
+      }
+      ```
+
+      **Be strict.** Code that makes tests pass but does not satisfy the real AC should be rejected.
+      Minimum passing score: 7/10 on each criterion, 8/10 overall.
+    output_format:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        overall_score:
+          type: number
+        issues:
+          type: array
+          items: { type: string }
+        suggestions:
+          type: array
+          items: { type: string }
+      required: [approved, overall_score, issues, suggestions]
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 8: CREATE PR — Draft pull request with coverage report + gate results
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: create-pr
+    depends_on: [red-gate, green-gate]
+    model: llama-swap/qwen3.6-27b-ud-q4
+    prompt: |
+      # Create Pull Request
+
+      The TDD implementation loop has finished and adversarial gates have reviewed the work.
+      Create a draft PR with full gate results.
+
+      ## Context
+
+      **Setup context:** $validate-setup.output
+      **Loop output (last iteration):** $tdd-loop.output
+      **Red gate review:** $red-gate.output
+      **Green gate review:** $green-gate.output
+
+      ---
+
+      ## Instructions
+
+      ### 1. Read Final State
+      Extract `PRD_DIR=...` from setup context. Read current files:
+      ```bash
+      cat {prd-dir}/prd.json
+      cat {prd-dir}/progress.txt
+      ```
+
+      ### 2. Gather Git Info
+      ```bash
+      BRANCH=$(git branch --show-current)
+      BASE_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null || echo "main")
+      git log --oneline --no-merges $(git merge-base HEAD $BASE_BRANCH)..HEAD
+      git diff --stat $(git merge-base HEAD $BASE_BRANCH)..HEAD
+      ```
+
+      ### 3. Test Coverage Summary
+      ```bash
+      bun run test --coverage 2>&1 || npm test -- --coverage 2>&1 || echo "(coverage not available)"
+      TEST_COUNT=$(find . -name "*.test.*" -o -name "*.spec.*" | grep -v node_modules | wc -l)
+      echo "Test files: $TEST_COUNT"
+      ```
+
+      ### 4. Read PR Template
+      ```bash
+      TEMPLATE=$(find .github -name "pull_request_template*" -type f 2>/dev/null | head -1)
+      [ -n "$TEMPLATE" ] && cat "$TEMPLATE" || echo "(no template)"
+      ```
+
+      ### 5. Create Draft PR
+      Fill in the template with actual data and create:
+      ```bash
+      gh pr create --draft --base $BASE_BRANCH \
+        --title "feat: {feature name}" \
+        --body "$(cat <<'BODY'
+      ## Summary
+      TDD implementation of {feature} — {N}/{M} stories completed.
+
+      ## Stories
+      | ID | Title | Status | Tests |
+      |----|-------|--------|-------|
+      {story rows from prd.json}
+
+      ## Adversarial Review (DeepSeek-r1:14b)
+      ### RED Gate — Test Suite Review
+      {red gate summary with scores}
+
+      ### GREEN Gate — Implementation Review
+      {green gate summary with scores}
+
+      **Per-iteration gates**: DeepSeek reviewed tests and code at every story via Ollama API.
+      **Post-loop gates**: DeepSeek did holistic review of entire test suite and implementation.
+
+      ## Test Coverage
+      {coverage summary}
+
+      ## Commits
+      {git log output}
+
+      ## Files Changed
+      {git diff --stat output}
+      BODY
+      )"
+      ```
+
+      ### 6. Output PR Info
+      ```bash
+      gh pr view HEAD --json url,number,state --jq '"\(.number) \(.url) \(.state)"'
+      ```
+
+      End with JSON:
+      ```json
+      {"pr_number": N, "pr_url": "https://...", "pr_state": "draft", "stories_total": N, "stories_passing": N}
+      ```
+    output_format:
+      type: object
+      properties:
+        pr_number: { type: number }
+        pr_url: { type: string }
+        pr_state: { type: string }
+        stories_total: { type: number }
+        stories_passing: { type: number }
+      required: [pr_number, pr_url, pr_state, stories_total, stories_passing]
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 9: APPROVE PR — Human reviews final PR (ONLY human gate)
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: approve-pr
+    depends_on: [create-pr]
+    approval:
+      message: |
+        ## TDD Implementation Complete — PR Ready for Review
+
+        **PR #{pr_number}**: $create-pr.output.pr_url
+        **Stories**: $create-pr.output.stories_passing / $create-pr.output.stories_total passing
+
+        Review the PR in your browser. Approve to merge+release, or provide feedback for fixes.
+
+        After approval: agents squash-merge, tag, and deploy (release mode).
+      capture_response: true
+
+  # ═══════════════════════════════════════════════════════════════
+  # NODE 10: RELEASE MODE — Merge, tag, deploy
+  # Runs after human approves the PR.
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: release-mode
+    depends_on: [approve-pr]
+    model: llama-swap/qwen3.6-27b-ud-q4
+    prompt: |
+      # Release Mode — Merge, Tag, Deploy
+
+      Human has approved the PR. Execute the release sequence.
+
+      **PR info:** $create-pr.output
+      **Human feedback (if any):** $approve-pr.response
+
+      ---
+
+      ## Instructions
+
+      ### 1. Check for Feedback Requiring Fixes
+      If human response contains specific change requests or "reject"/"changes needed":
+      - Implement fixes in a new commit, push to update PR
+      - Output `{"action": "fixes_applied", "feedback_addressed": true}` and stop
+
+      ### 2. Merge the PR
+      ```bash
+      PR_NUMBER=$create-pr.output.pr_number
+      gh pr merge $PR_NUMBER --squash --delete-branch
+      ```
+
+      ### 3. Tag the Release
+      ```bash
+      FEATURE=$(grep -o '"feature": "[^"]*"' {prd-dir}/prd.json | head -1 | cut -d'"' -f4)
+      TAG="feat/$(echo $FEATURE | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+      git tag -a "$TAG" -m "Release: $FEATURE — TDD implementation of $create-pr.output.stories_passing stories"
+      git push origin "$TAG"
+      ```
+
+      ### 4. Deploy (auto-detect platform)
+      ```bash
+      if [ -f "wrangler.toml" ]; then
+        echo "Deploying to Cloudflare..."; npx wrangler pages deploy dist 2>&1 || true; npx wrangler deploy 2>&1 || true
+      fi
+      if [ -d ".vercel" ]; then
+        echo "Deploying to Vercel..."; npx vercel --prod 2>&1 || true
+      fi
+      if [ -f "netlify.toml" ]; then
+        echo "Deploying to Netlify..."; npx netlify deploy --prod 2>&1 || true
+      fi
+      if [ -f ".github/workflows/deploy.yml" ]; then
+        echo "CI/CD workflow detected — deployment handled by GitHub Actions"
+      fi
+      ```
+
+      ### 5. Final Report
+      ```
+      RELEASE COMPLETE
+      Feature: {feature name}
+      PR: #{pr_number} — merged (squash)
+      Tag: {tag}
+      Stories: {N}/{M} completed
+      Tests: {count} test files
+      Deployment: {status or "handled by CI/CD"}
+      ```
+
+      End with JSON:
+      ```json
+      {"released": true, "pr_number": N, "tag": "{tag}", "deployment_status": "success|skipped|ci-cd"}
+      ```
+    output_format:
+      type: object
+      properties:
+        released: { type: boolean }
+        pr_number: { type: number }
+        tag: { type: string }
+        deployment_status:
+          type: string
+          enum: [success, skipped, ci-cd]
+      required: [released, pr_number, tag, deployment_status]
