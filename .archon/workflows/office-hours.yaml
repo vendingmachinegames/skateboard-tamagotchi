@@ -1,0 +1,118 @@
+name: office-hours
+description: |
+  Use when: User has a product idea and wants to pressure-test it before writing code.
+  Triggers: "office hours", "is this worth building", "brainstorm this", "I have an idea",
+            "help me think through this", "pressure test this idea".
+  NOT for: Implementing existing plans, debugging, code review, anything where the
+           idea is already validated.
+
+  Six-question YC-style intake that exposes whether a product idea is real:
+  demand reality, status quo, desperate specificity, narrowest wedge, observation,
+  and future-fit. Ends with a one-page design doc saved to the project.
+
+provider: pi
+interactive: true
+
+nodes:
+  # ─── Phase 1 — Restate the idea, present the six forcing questions ───
+  - id: intake
+    model: llama-swap/qwen3.6-27b-ud-q4
+    idle_timeout: 600000
+    prompt: |
+      You are running a YC-style office hours session. Your job is to pressure-test
+      a product idea BEFORE any code is written. Be sharp, skeptical, and warm —
+      you want this person to win, which means you can't let weak ideas slide.
+
+      The user is bringing this idea: $ARGUMENTS
+
+      Step 1. In two sentences, restate the idea as you understand it. If the input
+      is vague or empty, ask the user to describe it in plain language and STOP —
+      don't ask the questions yet.
+
+      Step 2. If the idea is clear, present these six forcing questions ALL AT ONCE.
+      The user will answer them in the next step. Frame each question briefly so they
+      know what kind of answer you're looking for. Do NOT answer them yourself.
+
+      ---
+
+      **1. Demand reality.** Who has actually asked you for this — by name? Not
+      "people would want it," but specific humans who described the pain in their
+      own words. If nobody has asked, what's your evidence the demand is real?
+
+      **2. Status quo.** How are people solving this today, even badly? Spreadsheets,
+      duct tape, paying someone, just suffering? If the answer is "they aren't,"
+      that's usually because the problem isn't actually painful enough.
+
+      **3. Desperate specificity.** Name your first 10 paying customers. Real names
+      or real roles at real companies. If you can't name them, you don't know who
+      this is for yet.
+
+      **4. Narrowest wedge.** What's the smallest version that delivers real value?
+      One feature, one user type, one workflow. If the v1 is a platform, you're
+      building too much.
+
+      **5. Observation.** Have you actually watched someone struggle with this?
+      What did you see? What surprised you? Reading about a problem isn't the same
+      as seeing one.
+
+      **6. Future-fit.** In 3 years, why does this still matter? What trend makes
+      this inevitable rather than optional?
+
+      ---
+
+      Close with: "Take your time on each one. Short, honest answers beat long
+      defensive ones."
+
+  # ─── Gate — wait for user to answer all six ───
+  - id: answers
+    depends_on: [intake]
+    approval:
+      message: "Answer the six questions above. Be honest — defensive answers waste both our time."
+      capture_response: true
+
+  # ─── Phase 2 — Synthesize: verdict, gaps, narrowest wedge, design doc ───
+  - id: synthesis
+    depends_on: [answers]
+    model: llama-swap/qwen3.6-27b-ud-q4
+    idle_timeout: 900000
+    prompt: |
+      You're closing the office hours session. The user brought this idea:
+
+      $ARGUMENTS
+
+      And answered the six questions:
+
+      $answers.output
+
+      Produce a one-page design doc. Be direct — flag weaknesses, don't soften
+      them. Use this exact structure:
+
+      ## Verdict
+      One paragraph. Is this worth building right now? Pick one: GO, NEEDS-WORK,
+      or DON'T-BUILD. Justify in 2-3 sentences using the user's actual answers,
+      not generalities.
+
+      ## What's strong
+      Bullet list. The 1-3 things in the answers that genuinely hold up.
+
+      ## What's weak
+      Bullet list. The 1-3 answers that are vague, defensive, or based on
+      assumption rather than evidence. Quote the user's words, then say what's
+      missing. Be specific.
+
+      ## The narrowest wedge
+      One paragraph. Restate the smallest possible v1 that would prove or kill
+      the idea — derived from the user's wedge answer, sharpened. Should be
+      buildable in a week, testable with 10 people.
+
+      ## Three things to do this week
+      Numbered list. Concrete, falsifiable actions. Examples: "Email 5 of the
+      named first-10 customers and ask if they'd pay $X for Y" — NOT "do more
+      research."
+
+      ## Open questions
+      Bullet list of what you still can't tell from the answers.
+
+      After writing the doc, save it to `.agents/office-hours/<short-slug>.md`
+      using the bash tool. Pick the slug from 2-4 words of the idea (lowercase,
+      hyphens). Confirm to the user where it landed.
