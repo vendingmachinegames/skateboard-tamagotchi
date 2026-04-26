@@ -40,7 +40,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Create src/types/ directory. Use TypeScript interfaces exclusively (no classes for data types). GameState should be a class with private state and public methods. Follow the type definitions from prd.md Technical Context section.",
-      "dependsOn": ["US-001"],
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 2,
       "passes": true,
       "notes": "Completed with 84 tests across 2 test files (131 total project tests). GameState uses setOnTick callback hook for external degradation systems."
@@ -61,7 +63,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Create src/systems/ and src/game/ directories. degradation.ts should be pure functions taking stats and deltaTime, returning new stats. Use constants.ts for all magic numbers. Test interconnected effects with edge cases (both truckTightness and gripCondition below 30).",
-      "dependsOn": ["US-002"],
+      "dependsOn": [
+        "US-002"
+      ],
       "priority": 3,
       "passes": true,
       "notes": "Completed with 48 tests. Pure function degradation system with interconnected effects and phase auto-updates. Constants centralized in DegradationConfig."
@@ -81,11 +85,13 @@
         "Type-check passes with zero errors",
         "Tests pass"
       ],
-      "technicalNotes": "Use Canvas2DContext API. Board should be drawn with ctx.fillRect, ctx.arc, ctx.beginPath etc. No external rendering libraries. Keep draw functions pure — accept ctx and data, produce side effects on canvas only. Test by verifying functions execute without throwing given a mock CanvasRenderingContext2D.",
-      "dependsOn": ["US-002"],
+      "technicalNotes": "Use Canvas2DContext API. Board should be drawn with ctx.fillRect, ctx.arc, ctx.beginPath etc. No external rendering libraries. Keep draw functions pure \u2014 accept ctx and data, produce side effects on canvas only. Test by verifying functions execute without throwing given a mock CanvasRenderingContext2D.",
+      "dependsOn": [
+        "US-002"
+      ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed with 37 tests. Color interpolation system for deck/wheel/truck based on stats."
     },
     {
       "id": "US-005",
@@ -102,10 +108,13 @@
         "Tests pass"
       ],
       "technicalNotes": "Care actions defined as const array of CareAction objects. performAction should be a pure function: takes state + actionId + timestamp, returns new state. Cooldowns tracked via lastUsed timestamp on each action. Stats capped at 100 using Math.min.",
-      "dependsOn": ["US-002", "US-003"],
+      "dependsOn": [
+        "US-002",
+        "US-003"
+      ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed with 46 tests. CARE_ACTIONS array with 4 actions, canPerformAction cooldown check, performAction pure state transformation."
     },
     {
       "id": "US-006",
@@ -122,8 +131,11 @@
         "Type-check passes with zero errors",
         "Tests pass"
       ],
-      "technicalNotes": "Use Canvas2DContext for all UI rendering — no DOM overlay. renderStatusBar draws filled rectangles for bars, ctx.fillText for labels. Button hit regions tracked as an array of {id, x, y, w, h} objects returned by renderButtons() for click detection. Color interpolation: green(0,180,0) → orange(255,165,0) → red(220,40,40).",
-      "dependsOn": ["US-002", "US-004"],
+      "technicalNotes": "Use Canvas2DContext for all UI rendering \u2014 no DOM overlay. renderStatusBar draws filled rectangles for bars, ctx.fillText for labels. Button hit regions tracked as an array of {id, x, y, w, h} objects returned by renderButtons() for click detection. Color interpolation: green(0,180,0) \u2192 orange(255,165,0) \u2192 red(220,40,40).",
+      "dependsOn": [
+        "US-002",
+        "US-004"
+      ],
       "priority": 5,
       "passes": false,
       "notes": ""
@@ -145,7 +157,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Use a simple seeded PRNG (mulberry32 or similar) for deterministic crack generation. Cracks generated as arrays of line segments. renderCracks uses ctx.beginPath/lineTo/stroke with variable line width based on severity. Seed should be derived from game start timestamp so cracks are consistent within a session but different across sessions.",
-      "dependsOn": ["US-003", "US-004"],
+      "dependsOn": [
+        "US-003",
+        "US-004"
+      ],
       "priority": 6,
       "passes": false,
       "notes": ""
@@ -160,13 +175,16 @@
         "src/render/effects.ts exports renderSnapAnimation(ctx, progress) where progress is 0-1",
         "At progress 0: board intact; at progress 0.5: crack widens and halves start separating; at progress 1.0: halves fully separated",
         "After animation completes, game over screen renders: 'YOUR BOARD SNAPPED' text, final score, time survived",
-        "'Play Again' button rendered on canvas — clicking it resets the game to a fresh board",
+        "'Play Again' button rendered on canvas \u2014 clicking it resets the game to a fresh board",
         "src/render/effects.ts exports renderGameOver(ctx, score, ticksAlive) function",
         "Type-check passes with zero errors",
         "Tests pass"
       ],
-      "technicalNotes": "Snap animation: split the deck drawing into two halves at the major crack line. Use ctx.save/restore and ctx.translate/ctx.rotate to animate separation. Game over text centered on canvas with large font. Play Again button is a styled rectangle — click detection handled by US-009's click system. Animate using requestAnimationFrame with easing (ease-in for dramatic effect).",
-      "dependsOn": ["US-004", "US-007"],
+      "technicalNotes": "Snap animation: split the deck drawing into two halves at the major crack line. Use ctx.save/restore and ctx.translate/ctx.rotate to animate separation. Game over text centered on canvas with large font. Play Again button is a styled rectangle \u2014 click detection handled by US-009's click system. Animate using requestAnimationFrame with easing (ease-in for dramatic effect).",
+      "dependsOn": [
+        "US-004",
+        "US-007"
+      ],
       "priority": 7,
       "passes": false,
       "notes": ""
@@ -186,8 +204,10 @@
         "Type-check passes with zero errors",
         "Tests pass"
       ],
-      "technicalNotes": "keyboard.ts: addEventListener('keydown', ...) on canvas element. Map key codes to action IDs. Pass callback pattern — don't import GameState directly (keep input layer decoupled). click.ts: addEventListener('click', ...), check if click coordinates fall within any button hit region returned by renderButtons(). Both use functional callbacks for testability.",
-      "dependsOn": ["US-005"],
+      "technicalNotes": "keyboard.ts: addEventListener('keydown', ...) on canvas element. Map key codes to action IDs. Pass callback pattern \u2014 don't import GameState directly (keep input layer decoupled). click.ts: addEventListener('click', ...), check if click coordinates fall within any button hit region returned by renderButtons(). Both use functional callbacks for testability.",
+      "dependsOn": [
+        "US-005"
+      ],
       "priority": 5,
       "passes": false,
       "notes": ""
@@ -201,14 +221,16 @@
         "saveGame serializes GameState to JSON and stores in localStorage under key 'skateboard-tamagotchi-save'",
         "loadGame reads from localStorage, parses JSON, returns GameState or null if no save exists",
         "Game auto-saves every 10 seconds during playing phase (timer in Game.ts)",
-        "On game initialization, loadGame is called — if save exists, state is restored; otherwise fresh board",
+        "On game initialization, loadGame is called \u2014 if save exists, state is restored; otherwise fresh board",
         "Saved state includes: stats, score, ticksAlive, cracks seed; excludes lastTick (reset on load)",
         "localStorage errors (quota exceeded, disabled) are caught and logged without crashing",
         "Type-check passes with zero errors",
         "Tests pass"
       ],
       "technicalNotes": "Use try/catch around localStorage.get/setItem. saveGame should serialize a copy of state (not the live object). On load, validate that returned data has expected fields before applying. Auto-save timer: track elapsed time in game loop, trigger save every 10000ms. For testing, mock localStorage with a simple in-memory Map.",
-      "dependsOn": ["US-002"],
+      "dependsOn": [
+        "US-002"
+      ],
       "priority": 8,
       "passes": false,
       "notes": ""

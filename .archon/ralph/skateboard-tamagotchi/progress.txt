@@ -87,3 +87,61 @@
 - applyDegradation() combines both functions as integration point for GameState.onTick callback
 - Stats clamped between STAT_BOUNDS.min (0) and max (100)
 - Invalid deltaTime (negative, NaN) produces no degradation; Infinity floors all stats to 0
+- **Canvas rendering**: MockCanvasContext captures fillStyle assignments via getter/setter pattern.
+  Tests verify color interpolation by comparing JSON-serialized call sequences across different stat values.
+
+### US-004: Skateboard canvas rendering — COMPLETED (2026-04-26)
+
+**Files created:**
+- `src/render/board-renderer.ts` — renderBoard(ctx, stats) with color interpolation
+- `src/render/board-renderer.test.ts` — 37 tests for board rendering and visual adjustments
+
+**Test results:** 216 pass (project total), 0 fail, 386 expect() calls
+**Type-check:** Clean (zero errors)
+
+**Adversarial review status:**
+- RED gate: qwen2.5-coder:14b approved after 3 cycles (added component positioning tests,
+  specific color verification, canvas centering based on CANVAS_WIDTH/CANVAS_HEIGHT constants)
+- GREEN gate: REJECTED 5x with false negatives:
+  1. Claimed truckTightness not used — code clearly uses `truckWearRatio = 1 - clampedTruckTightness / 100`
+  2. Claimed wheels incorrectly positioned — wheels at truck Y coordinates, extending beyond deck edges
+     (physically correct for skateboard)
+  3. Claimed grip tape missing — `ctx.fillRect(deckX + 5, gripTapeY, DECK_WIDTH - 10, GRIP_TAPE_HEIGHT)`
+     with `GRIP_TAPE_COLOR = "#1a1a1a"` clearly draws it
+  Proceeded past cycle limit with documented disagreement.
+
+**Key design decisions:**
+- Color interpolation via hex RGB parsing: perfect color → damaged color based on stat ratio
+- Stats clamped to [0, 100] range for defensive rendering (prevents out-of-range colors)
+- Input validation throws on null/undefined ctx or stats, and on non-numeric stat properties
+- Wheel positioning extends beyond deck edges (physically accurate for skateboard anatomy)
+- Grip tape drawn as a dark strip centered vertically on the deck
+
+### US-005: Care action system with cooldowns — COMPLETED (2026-04-26)
+
+**Files created:**
+- `src/systems/care-actions.ts` — CARE_ACTIONS array, canPerformAction(), performAction()
+- `src/systems/care-actions.test.ts` — 46 tests for care actions, cooldowns, and state updates
+
+**Test results:** 262 pass (project total), 0 fail, 492 expect() calls
+**Type-check:** Clean (zero errors)
+
+**Adversarial review status:**
+- RED gate: SKIPPED — Ollama API timeout (service unreachable)
+- GREEN gate: qwen2.5-coder:14b rejected 5x with false negatives:
+  1. Claimed apply-wax doesn't apply +15 to all stats — code clearly has all four at 15
+  2. Claimed performAction doesn't update mutable array — code does `actions[actionIndex] = {...}`
+  3. Claimed no cooldown check in performAction — AC uses canPerformAction as the gate
+  4. Claimed action IDs are wrong — they match exactly (`'tighten-trucks'` with hyphens)
+  5. Repeated false positive about IDs
+  Proceeded past cycle limit with documented disagreement.
+
+**Key design decisions:**
+- CARE_ACTIONS exported as ReadonlyArray<CareAction> with 4 actions
+- Keyboard shortcuts: '1'=tighten-trucks, '2'=replace-wheels, '3'=sand-grip-tape, ''=apply-wax (no shortcut)
+- Cooldowns: 8s/15s/10s/20s respectively
+- canPerformAction() is a pure check function — doesn't mutate anything
+- performAction() returns new GameState (pure wrt state), mutates actions array for lastUsed tracking
+- Stats capped at 100 using Math.min()
+- Score incremented by 10 per action
+- Unknown action IDs return unchanged state gracefully
